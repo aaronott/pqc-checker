@@ -114,6 +114,8 @@ Hybrid approaches ensure security even if one algorithm is compromised. Other va
 
 ## Enabling PQC on Your Server
 
+> Note these are example configurations and should NOT be used as is. The Internet is sadly not yet ready for TLS 1.3 only.
+
 ### Prerequisites
 
 - OpenSSL 3.2+ with PQC support
