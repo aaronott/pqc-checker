@@ -8,12 +8,14 @@ This script uses OpenSSL to test remote servers and determine if they support an
 
 ## Features
 
-- Tests TLS 1.2 and TLS 1.3 connections
-- Detects PQC key exchange mechanisms (Kyber, ML-KEM, hybrid algorithms)
-- Identifies if PQC ciphers are prioritized by the server
+- Tests TLS connections for PQC support (requires TLS 1.3)
+- Detects PQC key exchange mechanisms (X25519MLKEM768 and other hybrid algorithms)
+- Identifies if PQC key exchange is used by the server
 - Provides detailed recommendations for enabling PQC
-- No external dependencies (uses Python standard library only)
+- No external Python dependencies (uses Python standard library + OpenSSL)
 - Simple CLI interface
+
+**Note on Naming:** Kyber was renamed to ML-KEM (Module-Lattice Key Encapsulation Mechanism) when NIST standardized it in 2024. You'll see both names in the wild—they refer to the same algorithm. Older implementations use "Kyber" naming; newer ones use "ML-KEM".
 
 ## Installation
 
@@ -29,6 +31,22 @@ chmod +x pqc_checker.py
   - Most Linux/macOS systems have this pre-installed
   - Windows: Install from [OpenSSL for Windows](https://slproweb.com/products/Win32OpenSSL.html) or use WSL
 - No external Python packages required
+
+## Quick Check
+
+Before testing your own servers, verify your environment is set up correctly:
+
+```bash
+# Check your OpenSSL version (need 3.2+ for full PQC support)
+openssl version
+
+# Quick test against a known PQC-enabled site
+./pqc_checker.py www.google.com
+
+# Expected output should show X25519MLKEM768 support
+```
+
+If you see "✅ POST-QUANTUM CRYPTOGRAPHY IS SUPPORTED" when testing www.google.com, your OpenSSL setup is working correctly.
 
 ## Usage
 
@@ -89,11 +107,10 @@ Post-quantum cryptography refers to cryptographic algorithms that are secure aga
 
 Current implementations use hybrid key exchange, combining classical and post-quantum algorithms:
 
-- **X25519Kyber768**: Combines X25519 (classical) with Kyber768 (PQC)
-- **P-256Kyber512**: Combines NIST P-256 with Kyber512
-- **P-384Kyber768**: Combines NIST P-384 with Kyber768
+- **X25519MLKEM768** (also called X25519Kyber768): Combines X25519 (classical) with ML-KEM-768 (PQC)
+  - This is the most widely deployed PQC algorithm, used by Google, Cloudflare, and Chrome
 
-This ensures security even if one algorithm is broken.
+Hybrid approaches ensure security even if one algorithm is compromised. Other variants like P-256Kyber512 and P-384Kyber768 exist but are not widely deployed in production.
 
 ## Enabling PQC on Your Server
 
@@ -108,14 +125,15 @@ This ensures security even if one algorithm is broken.
 server {
     listen 443 ssl http2;
 
-    # Enable TLS 1.3
+    # Enable TLS 1.3 (required for PQC)
     ssl_protocols TLSv1.3;
 
     # Prefer server cipher order
     ssl_prefer_server_ciphers on;
 
     # Enable PQC hybrid key exchange
-    ssl_ecdh_curve X25519Kyber768:X25519:prime256v1;
+    # Note: ssl_ecdh_curve configures key exchange groups (not just EC curves)
+    ssl_ecdh_curve X25519MLKEM768:X25519:prime256v1;
 
     # Certificates
     ssl_certificate /path/to/cert.pem;
@@ -123,15 +141,17 @@ server {
 }
 ```
 
+**Note:** Depending on your OpenSSL/Nginx version, you may need to use `X25519Kyber768` instead of `X25519MLKEM768`.
+
 ### Apache Configuration
 
 ```apache
 <VirtualHost *:443>
-    # Enable TLS 1.3 only
+    # Enable TLS 1.3 (required for PQC)
     SSLProtocol -all +TLSv1.3
 
     # Enable PQC hybrid key exchange
-    SSLOpenSSLConfCmd Curves X25519Kyber768:X25519:prime256v1
+    SSLOpenSSLConfCmd Curves X25519MLKEM768:X25519:prime256v1
 
     # Honor server cipher order
     SSLHonorCipherOrder on
@@ -142,9 +162,26 @@ server {
 </VirtualHost>
 ```
 
-### Building OpenSSL with PQC Support
+**Note:** Depending on your OpenSSL/Apache version, you may need to use `X25519Kyber768` instead of `X25519MLKEM768`.
 
-If your system's OpenSSL doesn't support PQC:
+### Upgrading OpenSSL for PQC Support
+
+Check your OpenSSL version: `openssl version`
+
+#### OpenSSL 3.2+ (Recommended)
+**Native ML-KEM support included.** Just update OpenSSL to 3.2 or later:
+
+```bash
+# On most systems, use your package manager
+# Ubuntu/Debian (when available):
+sudo apt update && sudo apt upgrade openssl
+
+# macOS with Homebrew:
+brew upgrade openssl
+```
+
+#### OpenSSL 3.0-3.1 (Requires OQS Provider)
+For older OpenSSL 3.x versions, you'll need the Open Quantum Safe (OQS) provider:
 
 ```bash
 # Install liboqs (Open Quantum Safe library)
@@ -154,12 +191,16 @@ mkdir build && cd build
 cmake -DCMAKE_INSTALL_PREFIX=/opt/oqs ..
 make && sudo make install
 
-# Build OpenSSL with OQS provider
-git clone https://github.com/openssl/openssl.git
-cd openssl
-./config --prefix=/opt/openssl-pqc
-make && sudo make install
+# Install OQS provider for OpenSSL
+git clone https://github.com/open-quantum-safe/oqs-provider.git
+cd oqs-provider
+cmake -S . -B build -DCMAKE_INSTALL_PREFIX=/usr/local
+cmake --build build
+sudo cmake --install build
 ```
+
+#### OpenSSL 1.1.1 or Earlier
+Not compatible with PQC. Upgrade to OpenSSL 3.2+.
 
 ## Examples
 
@@ -222,12 +263,12 @@ openssl s_client -connect your-domain.com:443 -tls1_3
 
 ## How It Works
 
-The script uses OpenSSL's `s_client` command to establish TLS connections and extract:
-- Protocol version (TLS 1.2, TLS 1.3)
+The script uses OpenSSL's `s_client` command to establish a TLS 1.3 connection and extract:
+- Protocol version
 - Cipher suite used
 - **Key exchange algorithm** (where PQC is implemented)
 
-For TLS 1.3, it parses the "Negotiated TLS1.3 group" field which contains the key exchange algorithm (e.g., X25519MLKEM768). This is where post-quantum cryptography is implemented in modern TLS connections.
+It parses the "Negotiated TLS1.3 group" field from the OpenSSL output, which contains the key exchange algorithm (e.g., X25519MLKEM768). **PQC key exchange is a TLS 1.3 feature**—it's negotiated via the `supported_groups` extension. TLS 1.2 uses a fundamentally different key exchange mechanism (baked into the cipher suite) and has no real-world PQC deployment.
 
 ## Limitations
 

@@ -2,8 +2,9 @@
 """
 Post-Quantum Cryptography TLS Configuration Checker
 
-This script tests TLS configurations of remote servers to determine
-if they support and prioritize post-quantum cryptography (PQC) cipher suites.
+This script tests TLS 1.3 configurations of remote servers to determine
+if they support and prioritize post-quantum cryptography (PQC) key exchange
+algorithms. PQC is a TLS 1.3 feature negotiated via the supported_groups extension.
 """
 
 import ssl
@@ -177,135 +178,137 @@ class PQCChecker:
 
     def check_pqc_support(self) -> TLSTestResult:
         """
-        Check if the target server supports PQC key exchange algorithms
+        Check if the target server supports PQC key exchange algorithms.
+        PQC is a TLS 1.3 feature, so we only test TLS 1.3 for PQC detection.
         """
-        supported_ciphers = []
-        pqc_kems = []
-        first_successful_version = None
-        first_successful_cipher = None
-        first_key_exchange = None
-        last_error = None
-
-        # First try with TLS 1.3 (where PQC is most common)
+        # Try TLS 1.3 (required for PQC)
         tls_version, cipher_suite, key_exchange, error = self._run_openssl_client('1.3')
 
         if tls_version and cipher_suite:
-            first_successful_version = tls_version
-            first_successful_cipher = cipher_suite
-            first_key_exchange = key_exchange
-            supported_ciphers.append(cipher_suite)
+            # TLS 1.3 connection successful
+            supported_ciphers = [cipher_suite]
+            pqc_kems = []
 
             # Check if the key exchange is PQC-related
             if key_exchange and self._is_pqc_related(key_exchange):
                 pqc_kems.append(key_exchange)
+
+            pqc_supported = len(pqc_kems) > 0
+            pqc_prioritized = pqc_supported  # If PQC is used, it's prioritized
+
+            return TLSTestResult(
+                hostname=self.hostname,
+                port=self.port,
+                tls_version=tls_version,
+                cipher_suite=cipher_suite,
+                key_exchange=key_exchange,
+                supported_ciphers=supported_ciphers,
+                pqc_supported=pqc_supported,
+                pqc_prioritized=pqc_prioritized,
+                pqc_kems=pqc_kems,
+                error=None
+            )
         else:
-            last_error = error
+            # TLS 1.3 failed - try TLS 1.2 to see if server is reachable
+            tls_version12, cipher_suite12, key_exchange12, error12 = self._run_openssl_client('1.2')
 
-        # Also try TLS 1.2 for completeness
-        tls_version12, cipher_suite12, key_exchange12, error12 = self._run_openssl_client('1.2')
+            if tls_version12 and cipher_suite12:
+                # Server only supports TLS 1.2
+                error_msg = "Server does not support TLS 1.3 (required for PQC)"
+            else:
+                # Could not connect at all
+                error_msg = error or "Could not establish TLS connection"
 
-        if tls_version12 and cipher_suite12:
-            if not first_successful_version:
-                first_successful_version = tls_version12
-                first_successful_cipher = cipher_suite12
-                first_key_exchange = key_exchange12
-
-            if cipher_suite12 not in supported_ciphers:
-                supported_ciphers.append(cipher_suite12)
-
-            # Check TLS 1.2 key exchange for PQC
-            if key_exchange12 and self._is_pqc_related(key_exchange12):
-                if key_exchange12 not in pqc_kems:
-                    pqc_kems.append(key_exchange12)
-        else:
-            if not last_error:
-                last_error = error12
-
-        # Determine if PQC is supported and prioritized
-        pqc_supported = len(pqc_kems) > 0
-        pqc_prioritized = pqc_supported and first_key_exchange and self._is_pqc_related(first_key_exchange)
-
-        return TLSTestResult(
-            hostname=self.hostname,
-            port=self.port,
-            tls_version=first_successful_version,
-            cipher_suite=first_successful_cipher,
-            key_exchange=first_key_exchange,
-            supported_ciphers=supported_ciphers,
-            pqc_supported=pqc_supported,
-            pqc_prioritized=pqc_prioritized,
-            pqc_kems=pqc_kems,
-            error=last_error if not first_successful_version else None
-        )
+            return TLSTestResult(
+                hostname=self.hostname,
+                port=self.port,
+                tls_version=tls_version12,
+                cipher_suite=cipher_suite12,
+                key_exchange=key_exchange12,
+                supported_ciphers=[cipher_suite12] if cipher_suite12 else [],
+                pqc_supported=False,
+                pqc_prioritized=False,
+                pqc_kems=[],
+                error=error_msg
+            )
 
 
 def generate_recommendations(result: TLSTestResult) -> List[str]:
     """Generate recommendations based on test results"""
-    recommendations = []
 
     if result.error:
-        recommendations.append(f"⚠️  Could not connect to {result.hostname}:{result.port}")
-        recommendations.append(f"   Error: {result.error}")
-        return recommendations
+        return [
+            f"⚠️  Could not connect to {result.hostname}:{result.port}",
+            f"   Error: {result.error}"
+        ]
 
     if not result.pqc_supported:
-        recommendations.append("❌ NO POST-QUANTUM CRYPTOGRAPHY SUPPORT DETECTED")
-        recommendations.append("")
-        recommendations.append("📋 RECOMMENDATIONS:")
-        recommendations.append("   1. Enable PQC hybrid key exchange algorithms:")
-        recommendations.append("      • X25519Kyber768 (X25519 + Kyber768) - RECOMMENDED")
-        recommendations.append("      • P-256Kyber512 (P-256 + Kyber512)")
-        recommendations.append("      • P-384Kyber768 (P-384 + Kyber768)")
-        recommendations.append("")
-        recommendations.append("   2. Ensure TLS 1.3 is enabled and prioritized")
-        recommendations.append("")
-        recommendations.append("   3. Update OpenSSL to version 3.2+ which includes:")
-        recommendations.append("      • ML-KEM (Kyber) support")
-        recommendations.append("      • Hybrid PQC key exchange")
-        recommendations.append("")
-        recommendations.append("   4. Configure your web server to prefer PQC ciphers:")
-        recommendations.append("")
-        recommendations.append("      Nginx example:")
-        recommendations.append("      ssl_protocols TLSv1.3;")
-        recommendations.append("      ssl_prefer_server_ciphers on;")
-        recommendations.append("      ssl_ecdh_curve X25519Kyber768:X25519:prime256v1;")
-        recommendations.append("")
-        recommendations.append("      Apache example:")
-        recommendations.append("      SSLProtocol -all +TLSv1.3")
-        recommendations.append("      SSLOpenSSLConfCmd Curves X25519Kyber768:X25519:prime256v1")
-        recommendations.append("")
-        recommendations.append("   5. Consider using AWS KMS, Cloudflare, or other providers")
-        recommendations.append("      that already support PQC")
-        recommendations.append("")
-        recommendations.append("⚠️  WHY THIS MATTERS:")
-        recommendations.append("   • Quantum computers threaten current encryption methods")
-        recommendations.append("   • 'Harvest now, decrypt later' attacks are already happening")
-        recommendations.append("   • NIST has standardized PQC algorithms (2024)")
-        recommendations.append("   • Early adoption prepares for post-quantum security")
+        tls13_warning = ""
+        if result.error and "TLS 1.3" in result.error:
+            tls13_warning = """
+⚠️  TLS 1.3 REQUIRED:
+   PQC requires TLS 1.3. This server does not support TLS 1.3.
+"""
+
+        message = f"""
+❌ NO POST-QUANTUM CRYPTOGRAPHY SUPPORT DETECTED
+{tls13_warning}
+📋 RECOMMENDATIONS:
+   1. Ensure TLS 1.3 is enabled (required for PQC)
+
+   2. Enable PQC hybrid key exchange algorithm:
+      • X25519MLKEM768 - RECOMMENDED
+        (Most widely deployed: Google, Cloudflare, Chrome)
+
+   3. Update OpenSSL to version 3.2+ which includes:
+      • Native ML-KEM (Kyber) support
+      • Hybrid PQC key exchange
+
+   4. Configure your web server:
+
+      Nginx example:
+      ssl_protocols TLSv1.3;
+      ssl_ecdh_curve X25519MLKEM768:X25519:prime256v1;
+
+      Apache example:
+      SSLProtocol -all +TLSv1.3
+      SSLOpenSSLConfCmd Curves X25519MLKEM768:X25519:prime256v1
+
+⚠️  WHY THIS MATTERS:
+   • Quantum computers threaten current encryption methods
+   • 'Harvest now, decrypt later' attacks are already happening
+   • NIST standardized PQC algorithms (2024)
+   • Early adoption prepares for post-quantum security
+"""
+        return message.strip().split('\n')
 
     elif not result.pqc_prioritized:
-        recommendations.append("⚠️  PQC SUPPORT DETECTED BUT NOT PRIORITIZED")
-        recommendations.append("")
-        recommendations.append("📋 RECOMMENDATIONS:")
-        recommendations.append("   1. Configure server to PRIORITIZE PQC cipher suites")
-        recommendations.append("   2. Ensure PQC algorithms appear first in cipher list")
-        recommendations.append("   3. Use ssl_prefer_server_ciphers (Nginx) or")
-        recommendations.append("      SSLHonorCipherOrder (Apache) to enforce preference")
-        recommendations.append("")
-        recommendations.append(f"   Current cipher in use: {result.cipher_suite}")
-        recommendations.append(f"   PQC ciphers detected: {', '.join(result.pqc_kems)}")
-    else:
-        recommendations.append("✅ POST-QUANTUM CRYPTOGRAPHY IS SUPPORTED AND PRIORITIZED")
-        recommendations.append("")
-        recommendations.append(f"   TLS Version: {result.tls_version}")
-        recommendations.append(f"   Cipher Suite: {result.cipher_suite}")
-        if result.key_exchange:
-            recommendations.append(f"   Key Exchange: {result.key_exchange}")
-        recommendations.append(f"   PQC Algorithms: {', '.join(result.pqc_kems)}")
-        recommendations.append("")
-        recommendations.append("👍 EXCELLENT! Your server is quantum-resistant.")
+        message = f"""
+⚠️  PQC SUPPORT DETECTED BUT NOT PRIORITIZED
 
-    return recommendations
+📋 RECOMMENDATIONS:
+   1. Configure server to PRIORITIZE PQC cipher suites
+   2. Ensure PQC algorithms appear first in cipher list
+   3. Use ssl_prefer_server_ciphers (Nginx) or
+      SSLHonorCipherOrder (Apache) to enforce preference
+
+   Current cipher in use: {result.cipher_suite}
+   PQC ciphers detected: {', '.join(result.pqc_kems)}
+"""
+        return message.strip().split('\n')
+
+    else:
+        key_exchange_info = f"\n   Key Exchange: {result.key_exchange}" if result.key_exchange else ""
+        message = f"""
+✅ POST-QUANTUM CRYPTOGRAPHY IS SUPPORTED AND PRIORITIZED
+
+   TLS Version: {result.tls_version}
+   Cipher Suite: {result.cipher_suite}{key_exchange_info}
+   PQC Algorithms: {', '.join(result.pqc_kems)}
+
+👍 EXCELLENT! Your server is quantum-resistant.
+"""
+        return message.strip().split('\n')
 
 
 def print_results(result: TLSTestResult, verbose: bool = False):
