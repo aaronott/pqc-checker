@@ -4,7 +4,7 @@ A Python tool to test TLS configurations for Post-Quantum Cryptography (PQC) sup
 
 ## Overview
 
-This script tests remote servers to determine if they support and prioritize post-quantum cryptography cipher suites. With the advent of quantum computing, traditional cryptographic algorithms like RSA and ECC are at risk. This tool helps you assess whether your servers are quantum-resistant.
+This script uses OpenSSL to test remote servers and determine if they support and prioritize post-quantum cryptography (PQC) key exchange algorithms. With the advent of quantum computing, traditional cryptographic algorithms like RSA and ECC are at risk. This tool helps you assess whether your servers are quantum-resistant by analyzing the actual key exchange algorithms negotiated during TLS handshakes.
 
 ## Features
 
