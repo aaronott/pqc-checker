@@ -1,0 +1,16 @@
+# No external Python packages required
+# This script uses only Python standard library modules:
+# - ssl
+# - socket
+# - argparse
+# - dataclasses
+# - typing
+# - urllib.parse
+# - subprocess
+# - re
+
+# System Requirements:
+# - Python 3.7+ required for dataclasses
+# - OpenSSL command-line tools (version 3.2+ recommended for full PQC support)
+#   Most Linux/macOS systems have this pre-installed
+#   Check version with: openssl version
